@@ -6,6 +6,9 @@ export default function handler(req, res) {
     const rawDob = typeof query.dob === "string" ? query.dob.trim() : "";
     const rawName = typeof query.name === "string" ? query.name.trim() : "";
     const rawQuestion = typeof query.question === "string" ? query.question.trim() : "";
+    const rawFormat = typeof query.format === "string" ? query.format.trim().toLowerCase() : "json";
+
+    const outputFormat = normalizeFormat(rawFormat);
 
     const dobValidation = validateDob(rawDob);
     const dobReady = dobValidation.valid && !!dobValidation.normalized;
@@ -20,6 +23,7 @@ export default function handler(req, res) {
     const precisionEventWindows = buildPrecisionEventWindows(ageContext, domainRouting);
     const remainingLifeMap = buildRemainingLifeMap(ageContext);
     const confidenceBlock = buildConfidenceBlock(ageContext, domainRouting, rawQuestion);
+
     const summaryBlock = buildSummaryBlock({
       ageContext,
       domainRouting,
@@ -29,18 +33,29 @@ export default function handler(req, res) {
       remainingLifeMap,
       confidenceBlock
     });
+
     const lokkothaBlock = buildLokkothaBlock({
       ageContext,
       domainRouting,
       majorFutureWindows,
       precisionEventWindows
     });
+
+    const precisionTimingResolver = buildPrecisionTimingResolver(
+      ageContext,
+      domainRouting,
+      precisionEventWindows,
+      now
+    );
+
     const finalVerdictBlock = buildFinalVerdictBlock({
       ageContext,
       domainRouting,
       precisionEventWindows,
+      precisionTimingResolver,
       confidenceBlock
     });
+
     const projectPasteBlock = buildProjectPasteBlock({
       rawName,
       normalizedDob: dobValidation.normalized,
@@ -48,6 +63,7 @@ export default function handler(req, res) {
       ageContext,
       confidenceBlock,
       precisionEventWindows,
+      precisionTimingResolver,
       majorFutureWindows,
       remainingLifeMap,
       summaryBlock,
@@ -55,10 +71,23 @@ export default function handler(req, res) {
       finalVerdictBlock
     });
 
+    const compactBlock = buildCompactBlock({
+      rawName,
+      normalizedDob: dobValidation.normalized,
+      domainRouting,
+      ageContext,
+      confidenceBlock,
+      precisionEventWindows,
+      precisionTimingResolver,
+      majorFutureWindows,
+      finalVerdictBlock
+    });
+
     const response = {
-      engine_status: "FUTURE_MASTER_PHASE_4_PREMIUM",
+      engine_status: "FUTURE_MASTER_PHASE_5_PREMIUM_TIMING",
       system_status: "ACTIVE",
       generated_at_utc: now.toISOString(),
+      output_format: outputFormat,
 
       input_block: {
         name: rawName || null,
@@ -84,26 +113,57 @@ export default function handler(req, res) {
         life_blueprint_engine: lifeBlueprintEngine,
         major_future_windows: majorFutureWindows,
         precision_event_windows: precisionEventWindows,
+        precision_timing_resolver: precisionTimingResolver,
         remaining_life_map: remainingLifeMap
       },
 
-      summary_block: summaryBlock,
+      summary_block: {
+        readable_summary: summaryBlock.readable_summary,
+        compact_summary: summaryBlock.compact_summary
+      },
 
-      lokkotha_block: lokkothaBlock,
+      lokkotha_block: {
+        text: lokkothaBlock.text
+      },
 
       project_paste_block: projectPasteBlock,
+
+      compact_block: compactBlock,
 
       final_verdict: finalVerdictBlock
     };
 
+    if (outputFormat === "project") {
+      return res.status(200).json({
+        engine_status: "FUTURE_MASTER_PHASE_5_PREMIUM_TIMING",
+        output_format: "project",
+        project_paste_block: projectPasteBlock
+      });
+    }
+
+    if (outputFormat === "compact") {
+      return res.status(200).json({
+        engine_status: "FUTURE_MASTER_PHASE_5_PREMIUM_TIMING",
+        output_format: "compact",
+        compact_block: compactBlock,
+        final_verdict: finalVerdictBlock
+      });
+    }
+
     return res.status(200).json(response);
   } catch (error) {
     return res.status(500).json({
-      engine_status: "FUTURE_MASTER_PHASE_4_PREMIUM",
+      engine_status: "FUTURE_MASTER_PHASE_5_PREMIUM_TIMING",
       system_status: "ERROR",
       error_message: error instanceof Error ? error.message : "Unknown error"
     });
   }
+}
+
+function normalizeFormat(format) {
+  if (format === "project") return "project";
+  if (format === "compact") return "compact";
+  return "json";
 }
 
 function validateDob(dob) {
@@ -164,6 +224,7 @@ function buildAgeContext(normalizedDob, now) {
   const birthMonthDay = `${String(birth.getUTCMonth() + 1).padStart(2, "0")}-${String(
     birth.getUTCDate()
   ).padStart(2, "0")}`;
+
   if (currentMonthDay < birthMonthDay) ageYears -= 1;
 
   const stage =
@@ -182,8 +243,6 @@ function buildAgeContext(normalizedDob, now) {
       ? "MEDIUM_HIGH"
       : ageYears >= 43 && ageYears <= 52
       ? "MEDIUM_HIGH"
-      : ageYears >= 53
-      ? "MEDIUM"
       : "MEDIUM";
 
   return {
@@ -206,89 +265,36 @@ function buildAgeContext(normalizedDob, now) {
 function detectDomain(question) {
   const q = (question || "").toLowerCase();
 
-  if (
-    q.includes("money") ||
-    q.includes("income") ||
-    q.includes("payment") ||
-    q.includes("debt") ||
-    q.includes("rizq")
-  ) {
-    return {
-      dominant_domain: "MONEY",
-      routing_mode: "QUESTION_GUIDED_SCAN"
-    };
+  if (containsAny(q, ["money", "income", "payment", "debt", "rizq"])) {
+    return { dominant_domain: "MONEY", routing_mode: "QUESTION_GUIDED_SCAN" };
+  }
+  if (containsAny(q, ["career", "job", "business", "work", "profession"])) {
+    return { dominant_domain: "CAREER", routing_mode: "QUESTION_GUIDED_SCAN" };
+  }
+  if (containsAny(q, ["love", "relationship", "partner", "girlfriend", "boyfriend"])) {
+    return { dominant_domain: "RELATIONSHIP", routing_mode: "QUESTION_GUIDED_SCAN" };
+  }
+  if (containsAny(q, ["marriage", "wife", "husband", "marry"])) {
+    return { dominant_domain: "MARRIAGE", routing_mode: "QUESTION_GUIDED_SCAN" };
+  }
+  if (containsAny(q, ["move", "relocation", "abroad", "country", "house", "home"])) {
+    return { dominant_domain: "RELOCATION", routing_mode: "QUESTION_GUIDED_SCAN" };
   }
 
-  if (
-    q.includes("career") ||
-    q.includes("job") ||
-    q.includes("business") ||
-    q.includes("work") ||
-    q.includes("profession")
-  ) {
-    return {
-      dominant_domain: "CAREER",
-      routing_mode: "QUESTION_GUIDED_SCAN"
-    };
-  }
+  return { dominant_domain: "GENERAL", routing_mode: "GENERAL_SCAN" };
+}
 
-  if (
-    q.includes("love") ||
-    q.includes("relationship") ||
-    q.includes("partner") ||
-    q.includes("girlfriend") ||
-    q.includes("boyfriend")
-  ) {
-    return {
-      dominant_domain: "RELATIONSHIP",
-      routing_mode: "QUESTION_GUIDED_SCAN"
-    };
-  }
-
-  if (
-    q.includes("marriage") ||
-    q.includes("wife") ||
-    q.includes("husband") ||
-    q.includes("marry")
-  ) {
-    return {
-      dominant_domain: "MARRIAGE",
-      routing_mode: "QUESTION_GUIDED_SCAN"
-    };
-  }
-
-  if (
-    q.includes("move") ||
-    q.includes("relocation") ||
-    q.includes("abroad") ||
-    q.includes("country") ||
-    q.includes("house") ||
-    q.includes("home")
-  ) {
-    return {
-      dominant_domain: "RELOCATION",
-      routing_mode: "QUESTION_GUIDED_SCAN"
-    };
-  }
-
-  return {
-    dominant_domain: "GENERAL",
-    routing_mode: "GENERAL_SCAN"
-  };
+function containsAny(text, arr) {
+  return arr.some((x) => text.includes(x));
 }
 
 function buildFutureTimeline(ageContext) {
-  if (!ageContext) {
-    return {
-      status: "LIMITED",
-      note: "DOB required for full future scan"
-    };
-  }
+  if (!ageContext) return { status: "LIMITED", note: "DOB required for full future scan" };
 
   return {
     status: "ACTIVE",
     short_term: "0-30 days",
-    mid_term: "1-3 months",
+    near_term: "1-3 months",
     expansion_term: "3-9 months",
     peak_term: "9-18 months",
     long_term: "18-36 months",
@@ -305,77 +311,60 @@ function buildFutureTimeline(ageContext) {
 }
 
 function buildEventDetection(ageContext, domainRouting) {
-  if (!ageContext) {
-    return {
-      status: "LIMITED",
-      note: "DOB required"
-    };
-  }
+  if (!ageContext) return { status: "LIMITED", note: "DOB required" };
 
   const domain = domainRouting.dominant_domain;
-  const high = ageContext.intensity_zone === "HIGH";
-  const highStrength = high ? "HIGH" : "MEDIUM";
+  const highStrength = ageContext.intensity_zone === "HIGH" ? "HIGH" : "MEDIUM";
 
-  const general = {
-    immediate_signal: "communication trigger / small opportunity",
-    near_signal: "decision phase / visible movement",
-    expansion_signal: "major restructuring / meaningful shift",
-    peak_signal: "high-probability breakthrough phase",
-    dominant_strength: highStrength
-  };
-
-  const domainMap = {
+  const map = {
+    GENERAL: {
+      immediate_signal: "communication trigger / small opportunity",
+      near_signal: "decision phase / visible movement",
+      expansion_signal: "major restructuring / meaningful shift",
+      peak_signal: "high-probability breakthrough phase"
+    },
     MONEY: {
       immediate_signal: "small money contact / earnings discussion",
       near_signal: "payment turn / financial decision / income movement",
       expansion_signal: "financial upgrade / stronger cash pattern",
-      peak_signal: "high-probability earnings jump or money structure reset",
-      dominant_strength: highStrength
+      peak_signal: "high-probability earnings jump or money structure reset"
     },
     CAREER: {
       immediate_signal: "work contact / opportunity message / role signal",
       near_signal: "career decision / business movement / responsibility increase",
       expansion_signal: "scale growth / business advancement / authority rise",
-      peak_signal: "high-probability career shift or major professional breakthrough",
-      dominant_strength: highStrength
+      peak_signal: "high-probability career shift or major professional breakthrough"
     },
     RELATIONSHIP: {
       immediate_signal: "message / emotional opening / contact return",
       near_signal: "bond clarification / relationship movement",
       expansion_signal: "serious emotional shift / attachment deepening",
-      peak_signal: "high-probability relationship chapter change",
-      dominant_strength: highStrength
+      peak_signal: "high-probability relationship chapter change"
     },
     MARRIAGE: {
       immediate_signal: "family talk / marriage topic signal",
       near_signal: "proposal / commitment discussion / serious alignment",
       expansion_signal: "marriage structuring / formal union movement",
-      peak_signal: "high-probability marriage window",
-      dominant_strength: highStrength
+      peak_signal: "high-probability marriage window"
     },
     RELOCATION: {
       immediate_signal: "movement talk / logistics / location signal",
       near_signal: "planning / decision / route opening",
       expansion_signal: "environment change / relocation groundwork",
-      peak_signal: "high-probability move or relocation window",
-      dominant_strength: highStrength
+      peak_signal: "high-probability move or relocation window"
     }
   };
 
   return {
     status: "ACTIVE",
     dominant_domain: domain,
-    ...(domainMap[domain] || general)
+    dominant_strength: highStrength,
+    ...(map[domain] || map.GENERAL)
   };
 }
 
 function buildLifeBlueprint(ageContext, domainRouting) {
-  if (!ageContext) {
-    return {
-      status: "LIMITED",
-      note: "DOB required"
-    };
-  }
+  if (!ageContext) return { status: "LIMITED", note: "DOB required" };
 
   const stageMap = {
     YOUTH: {
@@ -411,12 +400,7 @@ function buildLifeBlueprint(ageContext, domainRouting) {
 }
 
 function buildMajorFutureWindows(ageContext, domainRouting) {
-  if (!ageContext) {
-    return {
-      status: "LIMITED",
-      note: "DOB required"
-    };
-  }
+  if (!ageContext) return { status: "LIMITED", note: "DOB required" };
 
   const age = ageContext.age_years;
   const domain = domainRouting.dominant_domain;
@@ -453,17 +437,11 @@ function buildMajorFutureWindows(ageContext, domainRouting) {
 }
 
 function buildPrecisionEventWindows(ageContext, domainRouting) {
-  if (!ageContext) {
-    return {
-      status: "LIMITED",
-      note: "DOB required"
-    };
-  }
+  if (!ageContext) return { status: "LIMITED", note: "DOB required" };
 
   const domain = domainRouting.dominant_domain;
-  const high = ageContext.intensity_zone === "HIGH";
 
-  const byDomain = {
+  const map = {
     GENERAL: {
       immediate: { window: "0-30 days", trigger: "incoming signal / small opening", action: "stay alert and respond early" },
       near_term: { window: "1-3 months", trigger: "decision pressure / visible movement", action: "avoid hesitation" },
@@ -505,18 +483,57 @@ function buildPrecisionEventWindows(ageContext, domainRouting) {
   return {
     status: "ACTIVE",
     intensity_zone: ageContext.intensity_zone,
-    high_activation: high,
-    ...(byDomain[domain] || byDomain.GENERAL)
+    high_activation: ageContext.intensity_zone === "HIGH",
+    ...(map[domain] || map.GENERAL)
   };
 }
 
-function buildRemainingLifeMap(ageContext) {
+function buildPrecisionTimingResolver(ageContext, domainRouting, precisionEventWindows, now) {
   if (!ageContext) {
     return {
       status: "LIMITED",
       note: "DOB required"
     };
   }
+
+  const intensity = ageContext.intensity_zone;
+  const selectedWindow = intensity === "HIGH" ? precisionEventWindows.peak : precisionEventWindows.expansion;
+
+  const baseDays =
+    selectedWindow.window === "0-30 days"
+      ? 15
+      : selectedWindow.window === "1-3 months"
+      ? 45
+      : selectedWindow.window === "3-9 months"
+      ? 120
+      : 300;
+
+  const targetDate = new Date(now.getTime() + baseDays * 24 * 60 * 60 * 1000);
+
+  const timeZones = [
+    "08:20-10:40",
+    "10:40-13:10",
+    "13:10-16:30",
+    "16:30-19:00",
+    "19:00-22:10"
+  ];
+
+  const index = (ageContext.age_years + baseDays) % timeZones.length;
+
+  return {
+    status: "ACTIVE",
+    dominant_domain: domainRouting.dominant_domain,
+    selected_window: selectedWindow.window,
+    trigger_type: selectedWindow.trigger,
+    probable_date: targetDate.toISOString().split("T")[0],
+    probable_time_range: timeZones[index],
+    precision_strength: intensity === "HIGH" ? "HIGH" : "MEDIUM",
+    note: "Final exact minute should be confirmed by live astro trigger resolution"
+  };
+}
+
+function buildRemainingLifeMap(ageContext) {
+  if (!ageContext) return { status: "LIMITED", note: "DOB required" };
 
   const age = ageContext.age_years;
 
@@ -526,18 +543,9 @@ function buildRemainingLifeMap(ageContext) {
     next_band: `${age + 5}-${age + 9}`,
     future_band: `${age + 10}-${age + 15}`,
     expected_progression: [
-      {
-        band: `${age}-${age + 4}`,
-        theme: "restructuring and active decision period"
-      },
-      {
-        band: `${age + 5}-${age + 9}`,
-        theme: "consolidation and visible result period"
-      },
-      {
-        band: `${age + 10}-${age + 15}`,
-        theme: "stabilized authority / mature life pattern"
-      }
+      { band: `${age}-${age + 4}`, theme: "restructuring and active decision period" },
+      { band: `${age + 5}-${age + 9}`, theme: "consolidation and visible result period" },
+      { band: `${age + 10}-${age + 15}`, theme: "stabilized authority / mature life pattern" }
     ]
   };
 }
@@ -572,9 +580,7 @@ function buildConfidenceBlock(ageContext, domainRouting, rawQuestion) {
     reasons.push("Question context supplied");
   }
 
-  let band = "MEDIUM";
-  if (score >= 80) band = "HIGH";
-  else if (score < 50) band = "LOW";
+  const band = score >= 80 ? "HIGH" : score < 50 ? "LOW" : "MEDIUM";
 
   return {
     confidence_band: band,
@@ -599,32 +605,26 @@ function buildSummaryBlock({
     };
   }
 
-  const readable =
-    `You are currently in ${ageContext.stage} at age ${ageContext.age_years}, operating inside the ${ageContext.current_band} activation band. ` +
-    `The dominant future reading is ${domainRouting.dominant_domain}. ` +
-    `Immediate future shows ${eventDetectionEngine.immediate_signal}. ` +
-    `The 3-12 month window shows ${majorFutureWindows.expansion_window.theme}. ` +
-    `The strongest 12-24 month movement is ${majorFutureWindows.destiny_window.theme}. ` +
-    `The clearest precision trigger is ${precisionEventWindows.peak.trigger}. ` +
-    `Overall confidence is ${confidenceBlock.confidence_band}.`;
-
-  const compact =
-    `Age ${ageContext.age_years} | ${domainRouting.dominant_domain} | ` +
-    `${majorFutureWindows.expansion_window.label}: ${majorFutureWindows.expansion_window.theme} | ` +
-    `${majorFutureWindows.destiny_window.label}: ${majorFutureWindows.destiny_window.theme} | ` +
-    `Current band ${remainingLifeMap.current_band}`;
-
   return {
-    readable_summary: readable,
-    compact_summary: compact
+    readable_summary:
+      `You are currently in ${ageContext.stage} at age ${ageContext.age_years}, operating inside the ${ageContext.current_band} activation band. ` +
+      `The dominant future reading is ${domainRouting.dominant_domain}. ` +
+      `Immediate future shows ${eventDetectionEngine.immediate_signal}. ` +
+      `The 3-12 month window shows ${majorFutureWindows.expansion_window.theme}. ` +
+      `The strongest 12-24 month movement is ${majorFutureWindows.destiny_window.theme}. ` +
+      `The clearest precision trigger is ${precisionEventWindows.peak.trigger}. ` +
+      `Overall confidence is ${confidenceBlock.confidence_band}.`,
+    compact_summary:
+      `Age ${ageContext.age_years} | ${domainRouting.dominant_domain} | ` +
+      `${majorFutureWindows.expansion_window.label}: ${majorFutureWindows.expansion_window.theme} | ` +
+      `${majorFutureWindows.destiny_window.label}: ${majorFutureWindows.destiny_window.theme} | ` +
+      `Current band ${remainingLifeMap.current_band}`
   };
 }
 
 function buildLokkothaBlock({ ageContext, domainRouting, majorFutureWindows, precisionEventWindows }) {
   if (!ageContext) {
-    return {
-      text: "তারিখ ছাড়া দূরের পথ ধরা যায় না।"
-    };
+    return { text: "তারিখ ছাড়া দূরের পথ ধরা যায় না।" };
   }
 
   const domainText =
@@ -647,7 +647,7 @@ function buildLokkothaBlock({ ageContext, domainRouting, majorFutureWindows, pre
   };
 }
 
-function buildFinalVerdictBlock({ ageContext, domainRouting, precisionEventWindows, confidenceBlock }) {
+function buildFinalVerdictBlock({ ageContext, domainRouting, precisionEventWindows, precisionTimingResolver, confidenceBlock }) {
   if (!ageContext) {
     return "Future premium scan not ready without valid DOB.";
   }
@@ -656,6 +656,8 @@ function buildFinalVerdictBlock({ ageContext, domainRouting, precisionEventWindo
     `High-value future scan active. Dominant domain: ${domainRouting.dominant_domain}. ` +
     `The strongest actionable window begins in ${precisionEventWindows.near_term.window}, ` +
     `with major breakthrough probability concentrated in ${precisionEventWindows.peak.window}. ` +
+    `Probable date: ${precisionTimingResolver.probable_date}. ` +
+    `Probable time range: ${precisionTimingResolver.probable_time_range}. ` +
     `Confidence: ${confidenceBlock.confidence_band}.`
   );
 }
@@ -667,6 +669,7 @@ function buildProjectPasteBlock({
   ageContext,
   confidenceBlock,
   precisionEventWindows,
+  precisionTimingResolver,
   majorFutureWindows,
   remainingLifeMap,
   summaryBlock,
@@ -684,23 +687,48 @@ function buildProjectPasteBlock({
   lines.push(`Current Band: ${ageContext ? ageContext.current_band : "N/A"}`);
   lines.push(`Confidence Band: ${confidenceBlock.confidence_band}`);
   lines.push(`Confidence Score: ${confidenceBlock.confidence_score}`);
-
   lines.push(`Immediate Window: ${precisionEventWindows.immediate?.window || "N/A"}`);
   lines.push(`Near-Term Window: ${precisionEventWindows.near_term?.window || "N/A"}`);
   lines.push(`Expansion Window: ${majorFutureWindows.expansion_window?.label || "N/A"}`);
   lines.push(`Destiny Window: ${majorFutureWindows.destiny_window?.label || "N/A"}`);
+  lines.push(`Probable Date: ${precisionTimingResolver.probable_date || "N/A"}`);
+  lines.push(`Probable Time Range: ${precisionTimingResolver.probable_time_range || "N/A"}`);
   lines.push(`Current Progression Band: ${remainingLifeMap.current_band || "N/A"}`);
-
-  lines.push("Readable Summary:");
-  lines.push(summaryBlock.readable_summary);
-
+  lines.push("Compact Summary:");
+  lines.push(summaryBlock.compact_summary);
   lines.push("Lokkotha Summary:");
   lines.push(lokkothaBlock.text);
-
   lines.push("Final Practical Verdict:");
   lines.push(finalVerdictBlock);
-
   lines.push("FUTURE MASTER BLOCK END");
 
   return lines.join("\n");
+}
+
+function buildCompactBlock({
+  rawName,
+  normalizedDob,
+  domainRouting,
+  ageContext,
+  confidenceBlock,
+  precisionEventWindows,
+  precisionTimingResolver,
+  majorFutureWindows,
+  finalVerdictBlock
+}) {
+  return {
+    name: rawName || null,
+    dob: normalizedDob || null,
+    dominant_domain: domainRouting.dominant_domain,
+    age: ageContext ? ageContext.age_years : null,
+    stage: ageContext ? ageContext.stage : null,
+    confidence_band: confidenceBlock.confidence_band,
+    immediate_window: precisionEventWindows.immediate?.window || null,
+    near_term_window: precisionEventWindows.near_term?.window || null,
+    expansion_window: majorFutureWindows.expansion_window?.label || null,
+    destiny_window: majorFutureWindows.destiny_window?.label || null,
+    probable_date: precisionTimingResolver.probable_date || null,
+    probable_time_range: precisionTimingResolver.probable_time_range || null,
+    final_verdict: finalVerdictBlock
+  };
 }
