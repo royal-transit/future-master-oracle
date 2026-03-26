@@ -1,15 +1,18 @@
-// api/future-oracle.js
+// api/oracle.js
 
 import { buildChartCore } from "../lib/chart-core.js";
 import { astroProvider } from "../lib/provider-adapter.js";
+
 import {
   FUTURE_ORACLE_VERSION,
   FUTURE_OUTPUT_REQUIREMENTS
 } from "../lib/future-oracle-contract.js";
+
 import { runFutureIntelligenceLayer } from "../lib/future-layer-intelligence.js";
 import { runFutureAstroLayer } from "../lib/future-layer-astro.js";
 import { runFutureTimingLayer } from "../lib/future-layer-timing.js";
 import { runFutureEvidenceLayer } from "../lib/future-layer-evidence.js";
+import { runFutureMicroTimingLayer } from "../lib/future-layer-micro-timing.js";
 
 /* =====================================
    BASIC HELPERS
@@ -171,6 +174,10 @@ function parseFactAnchors(facts, question) {
   };
 }
 
+/* =====================================
+   SHAPE / OUTPUT HELPERS
+===================================== */
+
 function minifyDomain(d) {
   return {
     domain_key: d.domain_key,
@@ -181,22 +188,6 @@ function minifyDomain(d) {
     residual_impact: d.residual_impact,
     future_strength: d.future_strength,
     confidence: d.confidence
-  };
-}
-
-function buildExactDateTimeBlock({
-  primary_future_domain,
-  best_window
-}) {
-  return {
-    exact_date_time_status: "NOT_ENABLED",
-    reason:
-      "Current build is hardened for full-domain future windows and ranked activation, not single exact timestamp extraction.",
-    primary_domain: primary_future_domain?.domain_key || "NONE",
-    best_window_key: best_window?.window_key || null,
-    best_window_label: best_window?.window_label || null,
-    exact_date: null,
-    exact_time: null
   };
 }
 
@@ -233,9 +224,9 @@ export default async function handler(req, res) {
       current_datetime_iso: str(q.current_datetime_iso)
     };
 
-    // ---------------------------------
-    // STEP 0: CORE CHART ENGINE
-    // ---------------------------------
+    /* ---------------------------------
+       STEP 0: CORE CHART ENGINE
+    --------------------------------- */
     const core = await buildChartCore(input, astroProvider);
 
     if (core.system_status !== "OK") {
@@ -246,48 +237,48 @@ export default async function handler(req, res) {
       });
     }
 
-    // ---------------------------------
-    // STEP 1: FACT PARSER
-    // ---------------------------------
+    /* ---------------------------------
+       STEP 1: FACT PARSER
+    --------------------------------- */
     const facts = parseFactAnchors(input.facts, input.question);
 
-    // ---------------------------------
-    // STEP 2: INTELLIGENCE (question/domain intent)
-    // ---------------------------------
+    /* ---------------------------------
+       STEP 2: INTELLIGENCE PASS 1
+    --------------------------------- */
     const stage1 = runFutureIntelligenceLayer({
       domainResults: [],
       question: input.question
     });
 
-    // ---------------------------------
-    // STEP 3: ASTRO DOMAIN SCAN
-    // ---------------------------------
+    /* ---------------------------------
+       STEP 3: ASTRO DOMAIN SCAN
+    --------------------------------- */
     const astro = runFutureAstroLayer({
       evidence_packet: core.evidence_packet,
       facts,
       question_profile: stage1.question_profile
     });
 
-    // ---------------------------------
-    // STEP 4: INTELLIGENCE RE-RANK
-    // ---------------------------------
+    /* ---------------------------------
+       STEP 4: INTELLIGENCE PASS 2
+    --------------------------------- */
     const stage2 = runFutureIntelligenceLayer({
       domainResults: astro.domain_results,
       question: input.question
     });
 
-    // ---------------------------------
-    // STEP 5: TIMING WINDOWS
-    // ---------------------------------
+    /* ---------------------------------
+       STEP 5: TIMING WINDOWS
+    --------------------------------- */
     const timing = runFutureTimingLayer({
       ranked_domains: stage2.ranked_domains,
       top_5_future_domains: stage2.top_5_future_domains,
       primary_future_domain: stage2.primary_future_domain
     });
 
-    // ---------------------------------
-    // STEP 6: EVIDENCE / VERDICT
-    // ---------------------------------
+    /* ---------------------------------
+       STEP 6: EVIDENCE / VERDICT
+    --------------------------------- */
     const evidenceLayer = runFutureEvidenceLayer({
       input,
       facts,
@@ -299,17 +290,19 @@ export default async function handler(req, res) {
       risk_window: timing.risk_window
     });
 
-    // ---------------------------------
-    // STEP 7: EXACT TIME BLOCK
-    // ---------------------------------
-    const exact_date_time_block = buildExactDateTimeBlock({
+    /* ---------------------------------
+       STEP 7: MICRO TIMING
+    --------------------------------- */
+    const microTiming = runFutureMicroTimingLayer({
       primary_future_domain: evidenceLayer.primary_future_domain,
-      best_window: timing.best_window
+      top_5_future_domains: evidenceLayer.top_5_future_domains,
+      best_window: timing.best_window,
+      current_context: core.current_context
     });
 
-    // ---------------------------------
-    // FINAL PAYLOAD
-    // ---------------------------------
+    /* ---------------------------------
+       FINAL PAYLOAD
+    --------------------------------- */
     const payload = {
       engine_status: FUTURE_ORACLE_VERSION,
       system_status: "OK",
@@ -342,7 +335,8 @@ export default async function handler(req, res) {
       lokkotha_summary: evidenceLayer.lokkotha_summary,
       project_paste_block: evidenceLayer.project_paste_block,
 
-      exact_date_time_block
+      exact_date_time_block: microTiming.exact_date_time_block,
+      top_5_micro_timing: microTiming.top_5_micro_timing
     };
 
     const requirementCheck = ensureRequirementShape(payload);
@@ -367,13 +361,15 @@ export default async function handler(req, res) {
       return res.status(200).json({
         engine_status: FUTURE_ORACLE_VERSION,
         output_format: "compact",
+        question_profile: stage2.question_profile,
         primary_future_domain: evidenceLayer.primary_future_domain,
         top_5_future_domains: evidenceLayer.top_5_future_domains,
         best_window: timing.best_window,
         risk_window: timing.risk_window,
         future_verdict: evidenceLayer.future_verdict,
         lokkotha_summary: evidenceLayer.lokkotha_summary,
-        exact_date_time_block
+        exact_date_time_block: microTiming.exact_date_time_block,
+        top_5_micro_timing: microTiming.top_5_micro_timing
       });
     }
 
