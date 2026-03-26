@@ -12,20 +12,8 @@ import { runFutureEvidenceLayer } from "../lib/future-layer-evidence.js";
 const round2 = (n) =>
   Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100;
 
-function safeJsonParse(value, fallback = null) {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return fallback;
-  }
-}
-
 function normalizeText(v) {
   return String(v || "").trim();
-}
-
-function toLower(v) {
-  return normalizeText(v).toLowerCase();
 }
 
 function normalizeName(v) {
@@ -94,7 +82,9 @@ function normalizeInput(body = {}) {
     pob: normalizeText(body.pob),
     latitude: Number.isFinite(latitude) ? latitude : null,
     longitude: Number.isFinite(longitude) ? longitude : null,
-    timezone_offset: normalizeText(body.timezone_offset || body.timezoneOffset || "+06:00"),
+    timezone_offset: normalizeText(
+      body.timezone_offset || body.timezoneOffset || "+06:00"
+    ),
     question: normalizeText(body.question),
     facts: normalizeText(body.facts),
     current_datetime_iso: normalizeIsoDateTime(
@@ -137,16 +127,24 @@ function parseFactAnchors(input) {
 
   const marriageCountMatch = raw.match(/(\d+)\s+(marriage|marriages|bea)/i);
   const brokenMarriageMatch = raw.match(/(\d+)\s+(broken|divorce|divorced|break)/i);
-  const foreignYearMatch = raw.match(/\b(20\d{2})\b(?=.*\b(uk|foreign|abroad|visa|migration|immigration)\b)/i);
-  const settlementYearMatch = raw.match(/\bsettlement\b.*?\b(20\d{2})\b|\b(20\d{2})\b.*?\bsettlement\b/i);
+  const foreignYearMatch = raw.match(
+    /\b(20\d{2})\b(?=.*\b(uk|foreign|abroad|visa|migration|immigration)\b)/i
+  );
+  const settlementYearMatch = raw.match(
+    /\bsettlement\b.*?\b(20\d{2})\b|\b(20\d{2})\b.*?\bsettlement\b/i
+  );
 
-  const allYears = Array.from(raw.matchAll(/\b(20\d{2})\b/g)).map((m) => Number(m[1]));
+  const allYears = Array.from(raw.matchAll(/\b(20\d{2})\b/g)).map((m) =>
+    Number(m[1])
+  );
 
   return {
     provided: raw.length > 0,
     raw_text: raw || null,
     marriage_count_claim: marriageCountMatch ? Number(marriageCountMatch[1]) : null,
-    broken_marriage_claim: brokenMarriageMatch ? Number(brokenMarriageMatch[1]) : null,
+    broken_marriage_claim: brokenMarriageMatch
+      ? Number(brokenMarriageMatch[1])
+      : null,
     foreign_entry_year_claim: foreignYearMatch ? Number(foreignYearMatch[1]) : null,
     settlement_year_claim: settlementYearMatch
       ? Number(settlementYearMatch[1] || settlementYearMatch[2])
@@ -250,8 +248,15 @@ function buildNanoVerdict({
   }
 
   const status = String(primary_future_event.event_status || "").toUpperCase();
-  const positive =
-    ["PROMISED", "FORMING", "PENDING", "BUILDING", "APPROACHING", "ACTIVE", "STABILISING"].includes(status);
+  const positive = [
+    "PROMISED",
+    "FORMING",
+    "PENDING",
+    "BUILDING",
+    "APPROACHING",
+    "ACTIVE",
+    "STABILISING"
+  ].includes(status);
 
   return {
     outcome_existence: positive ? "WILL_HAPPEN" : "CONDITIONAL",
@@ -339,14 +344,18 @@ function buildErrorResponse(res, err, input_normalized = null) {
 }
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
+  const isGET = req.method === "GET";
+  const isPOST = req.method === "POST";
+
+  if (!isGET && !isPOST) {
     return res.status(405).json({
       engine_status: "FUTURE_ORACLE_LAYERED_NANO_V1",
       system_status: "METHOD_NOT_ALLOWED"
     });
   }
 
-  const input_normalized = normalizeInput(req.body || {});
+  const inputSource = isGET ? req.query : req.body;
+  const input_normalized = normalizeInput(inputSource || {});
   const birth_context = buildBirthContext(input_normalized);
   const current_context = buildCurrentContext(input_normalized);
   const fact_anchor_block = parseFactAnchors(input_normalized);
@@ -465,16 +474,21 @@ export default async function handler(req, res) {
         carryover_domains: []
       },
 
-      top_ranked_domains: safeTopRankedDomains(intelligence_layer?.ranked_domains || []),
+      top_ranked_domains: safeTopRankedDomains(
+        intelligence_layer?.ranked_domains || []
+      ),
       domain_results: intelligence_layer?.ranked_domains || [],
 
       dominant_date_lock: timing_layer?.dominant_date_lock || {},
-      primary_future_date_packet: timing_layer?.primary_future_date_packet || null,
+      primary_future_date_packet:
+        timing_layer?.primary_future_date_packet || null,
       timing_radar: timing_layer?.timing_radar || [],
 
       exact_time_lock: micro_timing_layer?.exact_time_lock || {},
-      primary_future_time_packet: micro_timing_layer?.primary_future_time_packet || null,
-      alternative_time_candidates: micro_timing_layer?.alternative_time_candidates || [],
+      primary_future_time_packet:
+        micro_timing_layer?.primary_future_time_packet || null,
+      alternative_time_candidates:
+        micro_timing_layer?.alternative_time_candidates || [],
       micro_timing_radar: micro_timing_layer?.micro_timing_radar || [],
 
       primary_future_event,
