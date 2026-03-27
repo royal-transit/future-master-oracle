@@ -158,7 +158,7 @@ export default async function handler(req, res) {
 
       exact_domain_summary: Array.isArray(micro.exact_domain_summary)
         ? micro.exact_domain_summary
-        : [],
+        : [], 
 
       master_timeline: Array.isArray(micro.future_timeline)
         ? micro.future_timeline
