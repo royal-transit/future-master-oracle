@@ -12,6 +12,10 @@ function safeObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
+function safeArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
 function toNumberOrUndefined(value) {
   if (value === undefined || value === null || value === "") return undefined;
   const n = Number(value);
@@ -38,9 +42,10 @@ function normalizeRequestInput(req) {
 
 function ensureQuestionProfile(profile, input) {
   const safeProfile = safeObject(profile);
+  const safeInput = safeObject(input);
 
   return {
-    raw_question: safeProfile.raw_question || input?.question || "",
+    raw_question: safeProfile.raw_question || safeInput.question || "",
     asks_count: Boolean(safeProfile.asks_count),
     asks_timing:
       safeProfile.asks_timing !== undefined
@@ -85,13 +90,8 @@ export default async function handler(req, res) {
       current_context
     }) || {};
 
-    const astro_domain_results = Array.isArray(astro.domain_results)
-      ? astro.domain_results
-      : [];
-
-    const astro_top_ranked_domains = Array.isArray(astro.top_ranked_domains)
-      ? astro.top_ranked_domains
-      : [];
+    const astro_domain_results = safeArray(astro.domain_results);
+    const astro_top_ranked_domains = safeArray(astro.top_ranked_domains);
 
     const timing = runFutureTimingLayer({
       input: input_normalized,
@@ -100,39 +100,55 @@ export default async function handler(req, res) {
       current_context
     }) || {};
 
+    const timing_future_timeline = safeArray(timing.future_timeline);
+    const timing_future_candidates = safeArray(timing.future_candidates);
+    const timing_next_major_event = timing.next_major_event || null;
+
     const micro = runFutureMicroTimingLayer({
       domain_results: astro_domain_results,
-      future_candidates: Array.isArray(timing.future_candidates)
-        ? timing.future_candidates
-        : [],
-      next_major_event: timing.next_major_event || null
+      future_candidates: timing_future_candidates,
+      next_major_event: timing_next_major_event
     }) || {};
 
-    const micro_domain_results = Array.isArray(micro.domain_results)
-      ? micro.domain_results
-      : astro_domain_results;
+    const micro_domain_results =
+      safeArray(micro.domain_results).length > 0
+        ? safeArray(micro.domain_results)
+        : astro_domain_results;
+
+    const merged_future_timeline =
+      safeArray(micro.future_timeline).length > 0
+        ? safeArray(micro.future_timeline)
+        : timing_future_timeline;
+
+    const merged_next_major_event =
+      micro.next_major_event || timing_next_major_event || null;
 
     const intelligence = runFutureIntelligenceLayer({
       domain_results: micro_domain_results,
       top_ranked_domains: astro_top_ranked_domains,
-      question_profile
+      question_profile,
+      future_timeline: merged_future_timeline
     }) || {};
 
-    const ranked_domains = Array.isArray(intelligence.ranked_domains)
-      ? intelligence.ranked_domains
-      : Array.isArray(intelligence.top_ranked_domains)
-        ? intelligence.top_ranked_domains
-        : astro_top_ranked_domains;
+    const ranked_domains =
+      safeArray(intelligence.ranked_domains).length > 0
+        ? safeArray(intelligence.ranked_domains)
+        : safeArray(intelligence.top_ranked_domains).length > 0
+          ? safeArray(intelligence.top_ranked_domains)
+          : astro_top_ranked_domains;
+
+    const resolved_question_profile = ensureQuestionProfile(
+      intelligence.question_profile || question_profile,
+      input_normalized
+    );
 
     const evidence = runFutureEvidenceLayer({
       input: input_normalized,
       facts: fact_anchor_block,
-      question_profile: ensureQuestionProfile(
-        intelligence.question_profile || question_profile,
-        input_normalized
-      ),
+      question_profile: resolved_question_profile,
       ranked_domains,
-      next_major_event: micro.next_major_event || timing.next_major_event || null
+      next_major_event: merged_next_major_event,
+      future_timeline: merged_future_timeline
     }) || {};
 
     const finalJson = buildFutureOracleContract({
@@ -143,50 +159,40 @@ export default async function handler(req, res) {
       birth_context,
       current_context,
       fact_anchor_block,
-      question_profile: ensureQuestionProfile(
-        intelligence.question_profile || question_profile,
-        input_normalized
-      ),
+      question_profile: {
+        ...resolved_question_profile,
+        primary_domain:
+          evidence.resolved_primary_domain ||
+          intelligence.primary_domain ||
+          resolved_question_profile.primary_domain ||
+          "GENERAL"
+      },
 
-      top_ranked_domains: Array.isArray(intelligence.top_ranked_domains)
-        ? intelligence.top_ranked_domains
-        : astro_top_ranked_domains,
+      top_ranked_domains:
+        safeArray(intelligence.top_ranked_domains).length > 0
+          ? safeArray(intelligence.top_ranked_domains)
+          : astro_top_ranked_domains,
 
-      domain_results: Array.isArray(intelligence.domain_results)
-        ? intelligence.domain_results
-        : micro_domain_results,
+      domain_results:
+        safeArray(intelligence.domain_results).length > 0
+          ? safeArray(intelligence.domain_results)
+          : micro_domain_results,
 
-      exact_domain_summary: Array.isArray(micro.exact_domain_summary)
-        ? micro.exact_domain_summary
-        : [], 
-
-      master_timeline: Array.isArray(micro.future_timeline)
-        ? micro.future_timeline
-        : Array.isArray(timing.future_timeline)
-          ? timing.future_timeline
-          : [],
-
+      exact_domain_summary: safeArray(micro.exact_domain_summary),
+      master_timeline: merged_future_timeline,
       current_carryover: safeObject(intelligence.current_carryover),
+
       event_summary: safeObject(evidence.event_summary),
       validation_block: safeObject(evidence.validation_block),
       forensic_verdict: safeObject(evidence.forensic_verdict),
       lokkotha_summary: safeObject(evidence.lokkotha_summary),
-      project_paste_block: evidence.project_paste_block || "",
-      raw_payload
+
+      raw_payload,
+      next_major_event: merged_next_major_event,
+      future_timeline: merged_future_timeline,
+      micro_timing_summary: safeArray(micro.micro_timing_summary),
+      project_paste_block: evidence.project_paste_block || ""
     }) || {};
-
-    finalJson.next_major_event =
-      micro.next_major_event || timing.next_major_event || null;
-
-    finalJson.future_timeline = Array.isArray(micro.future_timeline)
-      ? micro.future_timeline
-      : Array.isArray(timing.future_timeline)
-        ? timing.future_timeline
-        : [];
-
-    finalJson.micro_timing_summary = Array.isArray(micro.micro_timing_summary)
-      ? micro.micro_timing_summary
-      : [];
 
     return res.status(200).json(finalJson);
   } catch (error) {
@@ -209,6 +215,10 @@ export default async function handler(req, res) {
         forensic_verdict: {},
         lokkotha_summary: {},
         raw_payload,
+        next_major_event: null,
+        future_timeline: [],
+        micro_timing_summary: [],
+        project_paste_block: "",
         error_message: error?.message || "UNKNOWN_ERROR"
       })
     );
