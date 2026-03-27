@@ -1,168 +1,133 @@
 // api/future-oracle.js
 
-import { buildChartCore, buildBirthContext, buildCurrentContext } from "../lib/chart-core.js";
-import { adaptFutureOracleInput } from "../lib/provider-adapter.js";
-import { validateFutureOracleInput } from "../lib/future-oracle-contract.js";
-import { runFutureAstroLayer } from "../lib/future-layer-astro.js";
-import { runFutureIntelligenceLayer } from "../lib/future-layer-intelligence.js";
-import { runFutureTimingLayer } from "../lib/future-layer-timing.js";
-import { runFutureMicroTimingLayer } from "../lib/future-layer-micro-timing.js";
-import { runEvidenceLayer } from "../lib/future-layer-evidence.js";
+import buildProviderAdapter from "../lib/provider-adapter.js";
+import runFutureAstroLayer from "../lib/future-layer-astro.js";
+import runFutureTimingLayer from "../lib/future-layer-timing.js";
+import runFutureMicroTimingLayer from "../lib/future-layer-micro-timing.js";
+import runFutureIntelligenceLayer from "../lib/future-layer-intelligence.js";
+import runFutureEvidenceLayer from "../lib/future-layer-evidence.js";
+import buildFutureOracleContract from "../lib/future-oracle-contract.js";
 
-const safeArray = (v) => (Array.isArray(v) ? v : []);
-const safeObject = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
-const safeString = (v, f = "") => (v == null ? f : String(v));
+function safeObject(v) {
+  return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+}
 
-function mergeQueryToBody(req) {
+function normalizeRequestInput(req) {
   if (req.method === "GET") {
     return {
       ...req.query,
-      // convert query params → usable types
-      latitude: req.query.latitude ? Number(req.query.latitude) : undefined,
-      longitude: req.query.longitude ? Number(req.query.longitude) : undefined
+      latitude:
+        req.query.latitude !== undefined && req.query.latitude !== ""
+          ? Number(req.query.latitude)
+          : undefined,
+      longitude:
+        req.query.longitude !== undefined && req.query.longitude !== ""
+          ? Number(req.query.longitude)
+          : undefined
     };
   }
+
   return safeObject(req.body);
-}
-
-function extractPrimary(domainResults = []) {
-  return safeArray(domainResults)
-    .map((d) => ({
-      ...d,
-      primary_exact_event: d.primary_exact_event || null
-    }))
-    .filter((d) => d.primary_exact_event)
-    .sort((a, b) => (b.rank_score || 0) - (a.rank_score || 0))[0] || null;
-}
-
-function buildTimeline(domainResults = []) {
-  return safeArray(domainResults).flatMap((d) => {
-    const primary = d.primary_exact_event
-      ? [{
-          domain: d.domain_label,
-          event: d.primary_exact_event.event_type,
-          exact_datetime_iso: d.primary_exact_event.exact_datetime_iso
-        }]
-      : [];
-
-    const alt = safeArray(d.alternative_exact_events).map((e) => ({
-      domain: d.domain_label,
-      event: e.event_type,
-      exact_datetime_iso: e.exact_datetime_iso
-    }));
-
-    return [...primary, ...alt];
-  }).sort((a,b)=> new Date(a.exact_datetime_iso) - new Date(b.exact_datetime_iso));
 }
 
 export default async function handler(req, res) {
   try {
-    // ✅ GET + POST unified
-    const raw = mergeQueryToBody(req);
+    const rawPayload = normalizeRequestInput(req);
 
-    // ✅ allow name-only
-    const adapted = adaptFutureOracleInput(raw);
-    const validation = validateFutureOracleInput(adapted);
+    const provider = buildProviderAdapter(rawPayload);
 
-    const input = safeObject(validation.normalized_input || adapted);
+    const input_normalized = provider.input_normalized || {};
+    const birth_context = provider.birth_context || {};
+    const current_context = provider.current_context || {};
+    const fact_anchor_block = provider.fact_anchor_block || {};
+    const question_profile = provider.question_profile || {};
 
-    // fallback minimal mode
-    if (!input.name && !input.dob) {
-      return res.status(200).json({
-        engine_status: "FUTURE_ORACLE_LAYERED_NANO_V1",
-        system_status: "FALLBACK",
-        message: "Insufficient data — minimal scan only",
-        suggestion: "Provide at least name or dob for deeper scan"
-      });
-    }
-
-    const birth = buildBirthContext(input);
-    const current = buildCurrentContext(input);
-
-    const chart = buildChartCore({
-      natal_planets: safeArray(input.natal_planets),
-      transit_planets: safeArray(input.transit_planets),
-      ascendant_degree: input.ascendant_degree ?? 0
-    });
-
-    // STEP 1 astro
     const astro = runFutureAstroLayer({
-      transit_house_mapping: safeArray(chart.transit_house_mapping),
-      aspect_table: safeArray(chart.aspect_table),
-      question_profile: { primary_domain: "GENERAL" },
-      linked_domain_expansion: []
+      input: input_normalized,
+      facts: fact_anchor_block,
+      question_profile,
+      birth_context,
+      current_context
     });
 
-    // STEP 2 intelligence
-    const intelligence = runFutureIntelligenceLayer({
-      domain_results: safeArray(astro.domain_results),
-      top_ranked_domains: safeArray(astro.top_ranked_domains),
-      question_profile: {
-        raw_question: safeString(input.question),
-        primary_domain: safeString(input.primary_domain || "GENERAL")
-      }
-    });
-
-    // STEP 3 timing
     const timing = runFutureTimingLayer({
-      domain_results: safeArray(intelligence.domain_results),
-      current_context: current,
-      input
+      input: input_normalized,
+      question_profile,
+      domain_results: astro.domain_results || [],
+      current_context
     });
 
-    // STEP 4 micro timing
     const micro = runFutureMicroTimingLayer({
-      domain_results: safeArray(timing.domain_results)
+      domain_results: astro.domain_results || [],
+      future_candidates: timing.future_candidates || [],
+      next_major_event: timing.next_major_event || null
     });
 
-    // timeline
-    const timeline = buildTimeline(micro.domain_results);
-
-    const evidence = runEvidenceLayer({
-      input,
-      facts: safeObject(input.facts),
-      question_profile: {
-        raw_question: safeString(input.question),
-        primary_domain: safeString(input.primary_domain || "GENERAL")
-      },
-      domain_results: safeArray(micro.domain_results),
-      ranked_domains: safeArray(intelligence.top_ranked_domains),
-      master_timeline: timeline,
-      carryover: null
+    const intelligence = runFutureIntelligenceLayer({
+      domain_results: micro.domain_results || [],
+      top_ranked_domains: astro.top_ranked_domains || [],
+      question_profile
     });
 
-    const primary = extractPrimary(micro.domain_results);
+    const evidence = runFutureEvidenceLayer({
+      input: input_normalized,
+      facts: fact_anchor_block,
+      question_profile: intelligence.question_profile || question_profile,
+      ranked_domains: intelligence.ranked_domains || [],
+      next_major_event: micro.next_major_event || null
+    });
 
-    return res.status(200).json({
+    const finalJson = buildFutureOracleContract({
       engine_status: "FUTURE_ORACLE_LAYERED_NANO_V1",
       system_status: "OK",
 
-      mode:
-        input.dob && input.tob ? "PRECISION_FULL" :
-        input.name ? "ADAPTIVE_PARTIAL" :
-        "MINIMAL",
+      input_normalized,
+      birth_context,
+      current_context,
+      fact_anchor_block,
+      question_profile: intelligence.question_profile || question_profile,
 
-      primary_future_event: primary,
-      micro_timing_summary: micro.micro_timing_summary,
+      astro_layer: {
+        domain_results: intelligence.domain_results || micro.domain_results || [],
+        top_ranked_domains: intelligence.top_ranked_domains || astro.top_ranked_domains || []
+      },
 
-      final_verdict: primary
-        ? `Event locked: ${primary.primary_exact_event.event_type} at ${primary.primary_exact_event.exact_datetime_iso}`
-        : "No strong event lock",
+      timing_layer: {
+        master_timeline: micro.future_timeline || timing.future_timeline || []
+      },
 
-      lokkotha:
-        primary
-          ? "ক্ষণ পাকলে ঘটনা নামবেই।"
-          : "সময় না এলে ফল ধরে না।",
+      micro_timing_layer: {
+        exact_domain_summary: micro.exact_domain_summary || [],
+        micro_timing_summary: micro.micro_timing_summary || []
+      },
 
-      timeline,
-      event_summary: evidence.event_summary
+      intelligence_layer: {
+        current_carryover: intelligence.current_carryover || {
+          present_carryover_detected: false,
+          carryover_domains: []
+        }
+      },
+
+      evidence_layer: evidence,
+      raw_payload: rawPayload
     });
 
-  } catch (err) {
-    return res.status(500).json({
-      engine_status: "FUTURE_ORACLE_LAYERED_NANO_V1",
-      system_status: "ERROR",
-      error: err.message
-    });
+    // extra live keys for easy Safari checking
+    finalJson.next_major_event = micro.next_major_event || null;
+    finalJson.future_timeline = micro.future_timeline || timing.future_timeline || [];
+    finalJson.micro_timing_summary = micro.micro_timing_summary || [];
+    finalJson.project_paste_block =
+      evidence.project_paste_block || finalJson.project_paste_block || "";
+
+    return res.status(200).json(finalJson);
+  } catch (error) {
+    return res.status(500).json(
+      buildFutureOracleContract({
+        engine_status: "FUTURE_ORACLE_LAYERED_NANO_V1",
+        system_status: "ERROR",
+        error_message: error?.message || "UNKNOWN_ERROR",
+        raw_payload: normalizeRequestInput(req)
+      })
+    );
   }
 }
