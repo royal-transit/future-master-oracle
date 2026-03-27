@@ -60,6 +60,30 @@ function ensureQuestionProfile(profile, input) {
   };
 }
 
+function createStableSeed(payload) {
+  const parts = [
+    String(payload?.name || "").trim().toLowerCase(),
+    String(payload?.dob || "").trim().toLowerCase(),
+    String(payload?.tob || "").trim().toLowerCase(),
+    String(payload?.pob || "").trim().toLowerCase(),
+    String(payload?.question || "").trim().toLowerCase(),
+    String(payload?.facts || "").trim().toLowerCase(),
+    String(payload?.latitude ?? ""),
+    String(payload?.longitude ?? ""),
+    String(payload?.timezone_offset || "").trim().toLowerCase()
+  ];
+
+  const joined = parts.join("|");
+  let hash = 2166136261;
+
+  for (let i = 0; i < joined.length; i += 1) {
+    hash ^= joined.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return Math.abs(hash >>> 0);
+}
+
 export default async function handler(req, res) {
   const raw_payload = normalizeRequestInput(req);
 
@@ -82,12 +106,19 @@ export default async function handler(req, res) {
       input_normalized
     );
 
+    const stable_seed = createStableSeed({
+      ...input_normalized,
+      ...birth_context,
+      ...question_profile
+    });
+
     const astro = runFutureAstroLayer({
       input: input_normalized,
       facts: fact_anchor_block,
       question_profile,
       birth_context,
-      current_context
+      current_context,
+      stable_seed
     }) || {};
 
     const astro_domain_results = safeArray(astro.domain_results);
@@ -97,7 +128,8 @@ export default async function handler(req, res) {
       input: input_normalized,
       question_profile,
       domain_results: astro_domain_results,
-      current_context
+      current_context,
+      stable_seed
     }) || {};
 
     const timing_future_timeline = safeArray(timing.future_timeline);
@@ -107,7 +139,8 @@ export default async function handler(req, res) {
     const micro = runFutureMicroTimingLayer({
       domain_results: astro_domain_results,
       future_candidates: timing_future_candidates,
-      next_major_event: timing_next_major_event
+      next_major_event: timing_next_major_event,
+      stable_seed
     }) || {};
 
     const micro_domain_results =
@@ -127,7 +160,8 @@ export default async function handler(req, res) {
       domain_results: micro_domain_results,
       top_ranked_domains: astro_top_ranked_domains,
       question_profile,
-      future_timeline: merged_future_timeline
+      future_timeline: merged_future_timeline,
+      stable_seed
     }) || {};
 
     const ranked_domains =
@@ -148,7 +182,8 @@ export default async function handler(req, res) {
       question_profile: resolved_question_profile,
       ranked_domains,
       next_major_event: merged_next_major_event,
-      future_timeline: merged_future_timeline
+      future_timeline: merged_future_timeline,
+      stable_seed
     }) || {};
 
     const finalJson = buildFutureOracleContract({
@@ -193,6 +228,12 @@ export default async function handler(req, res) {
       micro_timing_summary: safeArray(micro.micro_timing_summary),
       project_paste_block: evidence.project_paste_block || ""
     }) || {};
+
+    finalJson.stability = {
+      stable_seed,
+      scan_mode: "DETERMINISTIC_LOCK",
+      same_input_same_output: true
+    };
 
     return res.status(200).json(finalJson);
   } catch (error) {
